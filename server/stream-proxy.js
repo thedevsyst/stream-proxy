@@ -80,7 +80,7 @@ const server = http.createServer((req, res) => {
 
           console.log(`Forwarding to ${selectedServer.url}`);
 
-          const fetch = (await import("node-fetch")).default;
+          // Use the global fetch available in Node >=18
           let aiResponse;
 
           if (serverIdx === 0) {
@@ -88,28 +88,18 @@ const server = http.createServer((req, res) => {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                ...(selectedServer.apiKey
-                  ? { Authorization: `Bearer ${selectedServer.apiKey}` }
-                  : {}),
+                ...(selectedServer.apiKey ? { Authorization: `Bearer ${selectedServer.apiKey}` } : {}),
               },
-              body: JSON.stringify({
-                model: payload.model,
-                messages: payload.messages,
-              }),
+              body: JSON.stringify({ model: payload.model, messages: payload.messages }),
             });
           } else {
             aiResponse = await fetch(`${selectedServer.url}/chat/completions`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                ...(selectedServer.apiKey
-                  ? { Authorization: `Bearer ${selectedServer.apiKey}` }
-                  : {}),
+                ...(selectedServer.apiKey ? { Authorization: `Bearer ${selectedServer.apiKey}` } : {}),
               },
-              body: JSON.stringify({
-                model: payload.model,
-                messages: payload.messages,
-              }),
+              body: JSON.stringify({ model: payload.model, messages: payload.messages }),
             });
           }
 

@@ -2,6 +2,7 @@
 
 Streaming proxy server for AI backends. Minimal project file so Render can detect and run the app.
 
+
 Run locally:
 
 ```bash
@@ -15,4 +16,4 @@ On Render set the start command to:
 npm start
 ```
 
-The server listens on `process.env.PORT`.
+The server file is located at `server/stream-proxy.js` and listens on `process.env.PORT`.

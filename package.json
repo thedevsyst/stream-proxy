@@ -2,15 +2,12 @@
   "name": "stream-proxy",
   "version": "1.0.0",
   "description": "Simple streaming proxy server for AI backends",
-  "main": "stream-proxy.js",
+  "main": "server/stream-proxy.js",
   "scripts": {
-    "start": "node stream-proxy.js"
+    "start": "node server/stream-proxy.js"
   },
   "engines": {
     "node": ">=18"
-  },
-  "dependencies": {
-    "node-fetch": "^3.4.0"
   },
   "license": "MIT"
 }
