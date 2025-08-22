@@ -5,7 +5,7 @@
 const http = require("http");
 const { URL } = require("url");
 
-const PORT = process.env.PORT; // ✅ Render injects this automatically
+const PORT = process.env.PORT || 3000; // ✅ Render injects PORT; fallback for local testing
 
 function sendNotFound(res) {
   res.statusCode = 404;
@@ -16,6 +16,17 @@ function sendNotFound(res) {
 const server = http.createServer((req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+
+    // Log incoming requests for debugging (shows in Render logs)
+    console.log(`[request] ${new Date().toISOString()} ${req.method} ${url.pathname} from ${req.socket.remoteAddress}`);
+
+    // Quick health check endpoint to validate the service is reachable
+    if (req.method === "GET" && url.pathname === "/health") {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(JSON.stringify({ status: "ok", time: new Date().toISOString() }));
+      return;
+    }
 
     // CORS headers so frontend apps can connect
     res.setHeader("Access-Control-Allow-Origin", "*");
