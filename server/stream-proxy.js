@@ -4,6 +4,7 @@
 
 const http = require("http");
 const { URL } = require("url");
+const pdf = require("pdf-parse");
 
 const PORT = process.env.PORT || 3000; // ✅ Render injects PORT; fallback for local testing
 
@@ -49,6 +50,46 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // PDF extraction endpoint
+    if (req.method === "POST" && url.pathname === "/api/extract-pdf") {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", async () => {
+        try {
+          const { url: pdfUrl } = JSON.parse(body);
+          console.log(`Extracting text from PDF: ${pdfUrl}`);
+          
+          // Fetch the PDF file
+          const pdfResponse = await fetch(pdfUrl);
+          if (!pdfResponse.ok) {
+            throw new Error(`Failed to fetch PDF: ${pdfResponse.status}`);
+          }
+          
+          const pdfBuffer = await pdfResponse.arrayBuffer();
+          const data = await pdf(Buffer.from(pdfBuffer));
+          
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ 
+            success: true, 
+            text: data.text,
+            pages: data.numpages,
+            info: data.info
+          }));
+        } catch (error) {
+          console.error("PDF extraction error:", error);
+          res.statusCode = 500;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ 
+            success: false, 
+            error: error.message 
+          }));
+        }
+      });
+      return;
+    }
+
     // POST streaming endpoint
     if (req.method === "POST" && url.pathname === "/api/ai/stream") {
       let body = "";
@@ -90,52 +131,152 @@ const server = http.createServer((req, res) => {
           if (!selectedServer) throw new Error(`Invalid server index: ${serverIdx}`);
 
           console.log(`Forwarding to ${selectedServer.url}`);
+          console.log('Payload received:', {
+            model: payload.model,
+            messagesCount: payload.messages?.length,
+            filesCount: payload.files?.length,
+            hasFiles: !!payload.files
+          });
+
+          // Process messages to handle multimodal content (images)
+          let processedMessages = payload.messages;
+          
+          // If we have files (images), we need to process the last user message
+          if (payload.files && payload.files.length > 0) {
+            const imageFiles = payload.files.filter(f => f.type && f.type.startsWith('image/'));
+            
+            if (imageFiles.length > 0) {
+              // Find the last user message and convert it to multimodal format
+              processedMessages = payload.messages.map((message, index) => {
+                if (message.role === 'user' && index === payload.messages.length - 1) {
+                  
+                  // Check if content is already in multimodal format (array)
+                  if (Array.isArray(message.content)) {
+                    console.log('Content already in multimodal format, using as-is');
+                    return message; // Already in correct format
+                  }
+                  
+                  // Convert string content to multimodal format
+                  const content = [
+                    { type: "text", text: message.content }
+                  ];
+                  
+                  // Add images
+                  imageFiles.forEach(file => {
+                    content.push({
+                      type: "image_url",
+                      image_url: {
+                        url: file.url
+                      }
+                    });
+                  });
+                  
+                  return {
+                    ...message,
+                    content: content
+                  };
+                }
+                return message;
+              });
+              
+              console.log('Processed multimodal message with', imageFiles.length, 'images');
+            }
+          }
 
           // Use the global fetch available in Node >=18
           let aiResponse;
+          let content;
 
           if (serverIdx === 0) {
+            // Server 1: Pollinations
             aiResponse = await fetch(`${selectedServer.url}/openai`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
                 ...(selectedServer.apiKey ? { Authorization: `Bearer ${selectedServer.apiKey}` } : {}),
               },
-              body: JSON.stringify({ model: payload.model, messages: payload.messages }),
+              body: JSON.stringify({ 
+                model: payload.model, 
+                messages: processedMessages,
+                timestamp: Date.now() // Prevent caching
+              }),
             });
+            
+            if (!aiResponse.ok) {
+              throw new Error(`Server 1 API error: ${aiResponse.status} - ${await aiResponse.text()}`);
+            }
+            
+            const aiData = await aiResponse.json();
+            content = aiData?.choices?.[0]?.message?.content || aiData?.content || "No content received";
+            
           } else {
-            aiResponse = await fetch(`${selectedServer.url}/chat/completions`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                ...(selectedServer.apiKey ? { Authorization: `Bearer ${selectedServer.apiKey}` } : {}),
-              },
-              body: JSON.stringify({ model: payload.model, messages: payload.messages }),
-            });
+            // Server 2: A4F.co with provider fallback
+            // Handle both string and array model IDs
+            let modelIds;
+            if (Array.isArray(payload.model)) {
+              modelIds = payload.model;
+            } else if (typeof payload.model === 'string') {
+              // Check if the model string contains multiple providers (comma-separated)
+              modelIds = payload.model.includes(',') ? payload.model.split(',').map(id => id.trim()) : [payload.model];
+            } else {
+              modelIds = [payload.model];
+            }
+            
+            let lastError = null;
+            let found = false;
+            
+            console.log(`Trying ${modelIds.length} model providers:`, modelIds);
+            
+            for (const modelId of modelIds) {
+              try {
+                console.log(`Attempting model: ${modelId}`);
+                aiResponse = await fetch(`${selectedServer.url}/chat/completions`, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    ...(selectedServer.apiKey ? { Authorization: `Bearer ${selectedServer.apiKey}` } : {}),
+                  },
+                  body: JSON.stringify({ 
+                    model: modelId, 
+                    messages: processedMessages,
+                    timestamp: Date.now() // Prevent caching
+                  }),
+                });
+                
+                if (aiResponse.ok) {
+                  const aiData = await aiResponse.json();
+                  content = aiData?.choices?.[0]?.message?.content || 
+                           aiData?.choices?.[0]?.delta?.content || 
+                           aiData?.choices?.[0]?.content || 
+                           "No content received";
+                  found = true;
+                  console.log(`Successfully used model: ${modelId}`);
+                  break;
+                } else {
+                  lastError = await aiResponse.text();
+                  console.warn(`Model ${modelId} failed with status ${aiResponse.status}: ${lastError}`);
+                }
+              } catch (err) {
+                lastError = err.message;
+                console.warn(`Model ${modelId} error: ${lastError}`);
+              }
+            }
+            
+            if (!found) {
+              throw new Error(`All providers failed for Server 2. Last error: ${lastError}`);
+            }
           }
-
-          if (!aiResponse.ok) {
-            throw new Error(
-              `AI server responded with ${aiResponse.status}: ${await aiResponse.text()}`
-            );
-          }
-
-          const aiData = await aiResponse.json();
-          const aiContent =
-            aiData?.choices?.[0]?.message?.content ||
-            aiData?.content ||
-            "No content received";
 
           // Stream typewriter style
           let idx = 0;
           const interval = setInterval(() => {
-            if (idx >= aiContent.length) {
+            if (idx >= content.length) {
               clearInterval(interval);
               res.end();
               return;
             }
             try {
-              res.write(aiContent[idx]);
+              res.write(content[idx]);
             } catch {
               clearInterval(interval);
             }
